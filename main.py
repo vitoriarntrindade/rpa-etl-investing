@@ -1,5 +1,5 @@
-import requests
-from bs4 import BeautifulSoup
+import asyncio
+from playwright.async_api import async_playwright
 import pandas as pd
 from typing import List, Dict
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime
@@ -8,36 +8,28 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 
-
 load_dotenv()
 
-
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_URL = "https://br.investing.com/indices/"
-
 
 engine = create_engine(os.getenv("DB_URL"))
 Session = sessionmaker(bind=engine)
 session = Session()
 Base = declarative_base()
 
-
 def create_tables() -> None:
     """Cria as tabelas no banco de dados, se não existirem."""
     Base.metadata.create_all(engine)
-
 
 class Pais(Base):
     __tablename__ = "pais"
     id = Column(Integer, primary_key=True)
     nome = Column(String, unique=True, nullable=False)
 
-
 class Setor(Base):
     __tablename__ = "setor"
     id = Column(Integer, primary_key=True)
     nome = Column(String, unique=True, nullable=False)
-
 
 class IndiceFinanceiro(Base):
     __tablename__ = "indice_financeiro"
@@ -51,10 +43,8 @@ class IndiceFinanceiro(Base):
     variacao = Column(Float)
     data_coleta = Column(DateTime, default=datetime.utcnow)
 
-
 URLS = {
-    "Brasil": f"{BASE_URL}brazil-indices?include-major-indices=true&include-additional-indices=true&include-primary-"
-              f"sectors=true&include-other-indices=true",
+    "Brasil": f"{BASE_URL}brazil-indices?include-major-indices=true&include-additional-indices=true&include-primary-sectors=true&include-other-indices=true",
     "China": f"{BASE_URL}china-indices?include-primary-sectors=true",
     "EUA": f"{BASE_URL}usa-indices?include-primary-sectors=true"
 }
@@ -63,7 +53,6 @@ SETOR_POR_PAIS = {
     "China": "Primário",
     "EUA": "Primário"
 }
-
 
 SETOR_POR_INDICE_BRASIL = {
     "Ibovespa": "Financeiro",
@@ -94,44 +83,41 @@ SETOR_POR_INDICE_BRASIL = {
     "Bovespa B3 Empresas Privada": "Financeiro"
 }
 
-def buscar_indices(url: str, pais_nome: str) -> List[Dict[str, float]]:
-    """Busca índices financeiros do site Investing.com e retorna como uma lista de dicionários."""
-    response = requests.get(url, headers=HEADERS)
-    soup = BeautifulSoup(response.text, "html.parser")
+async def buscar_indices_playwright(url: str, pais_nome: str) -> List[Dict[str, float]]:
+    """Busca índices financeiros usando Playwright e retorna uma lista de dicionários."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url)
 
-    indices = []
-    linhas = soup.select("tbody tr")
+        indices = []
+        linhas = await page.query_selector_all("tbody tr")
 
-    for linha in linhas:
-        colunas = linha.find_all("td")
-        if len(colunas) >= 6:
-            try:
-                nome = colunas[1].find("a").text.strip()
-                valor_atual = float(colunas[2].text.strip().replace(".", "").replace(",", "."))
-                maxima = float(colunas[3].text.strip().replace(".", "").replace(",", "."))
-                minima = float(colunas[4].text.strip().replace(".", "").replace(",", "."))
-                variacao = float(
-                    colunas[5].text.strip().replace(".", "").replace(",", ".").replace("+", "").replace("%", ""))
+        for linha in linhas:
+            colunas = await linha.query_selector_all("td")
+            if len(colunas) >= 6:
+                try:
+                    nome = await (await colunas[1].query_selector("a")).inner_text()
+                    valor_atual = float((await colunas[2].inner_text()).strip().replace(".", "").replace(",", "."))
+                    maxima = float((await colunas[3].inner_text()).strip().replace(".", "").replace(",", "."))
+                    minima = float((await colunas[4].inner_text()).strip().replace(".", "").replace(",", "."))
+                    variacao = float((await colunas[5].inner_text()).strip().replace(".", "").replace(",", ".").replace("+", "").replace("%", ""))
 
-                if pais_nome == "Brasil":
-                    setor = SETOR_POR_INDICE_BRASIL.get(nome, "Diversificado")
-                else:
-                    setor = SETOR_POR_PAIS.get(pais_nome, "Primário")
+                    setor = SETOR_POR_INDICE_BRASIL.get(nome, "Diversificado") if pais_nome == "Brasil" else SETOR_POR_PAIS.get(pais_nome, "Primário")
 
-                indices.append({
-                    "nome": nome,
-                    "valor_atual": valor_atual,
-                    "maxima": maxima,
-                    "minima": minima,
-                    "variacao": variacao,
-                    "setor": setor
-                })
-            except (ValueError, AttributeError):
-                continue
+                    indices.append({
+                        "nome": nome,
+                        "valor_atual": valor_atual,
+                        "maxima": maxima,
+                        "minima": minima,
+                        "variacao": variacao,
+                        "setor": setor
+                    })
+                except (ValueError, AttributeError):
+                    continue
 
-    return indices
-
-
+        await browser.close()
+        return indices
 
 def inserir_dados(df: pd.DataFrame, pais_nome: str) -> None:
     """Insere os índices financeiros no banco de dados usando SQLAlchemy."""
@@ -160,11 +146,9 @@ def inserir_dados(df: pd.DataFrame, pais_nome: str) -> None:
         session.add(indice)
         session.commit()
 
-
 def obter_top_10_indices() -> pd.DataFrame:
     """Recupera os 10 principais índices do setor primário da China e EUA com os maiores valores máximos."""
-    query = session.query(IndiceFinanceiro.nome, Pais.nome.label("pais"), Setor.nome.label("setor"),
-                          IndiceFinanceiro.maxima)
+    query = session.query(IndiceFinanceiro.nome, Pais.nome.label("pais"), Setor.nome.label("setor"), IndiceFinanceiro.maxima)
     query = query.join(Pais, IndiceFinanceiro.pais_id == Pais.id)
     query = query.join(Setor, IndiceFinanceiro.setor_id == Setor.id)
     query = query.filter(Setor.nome == 'Primário', Pais.nome.in_(["China", "EUA"]))
@@ -172,13 +156,13 @@ def obter_top_10_indices() -> pd.DataFrame:
     df = pd.DataFrame(query.all(), columns=["nome", "pais", "setor", "maxima"])
     return df
 
-
-def main() -> None:
+async def main() -> None:
     """Orquestra a coleta, armazenamento e exibição dos dados."""
     create_tables()
-    dados_brasil = buscar_indices(URLS["Brasil"], "Brasil")
-    dados_china = buscar_indices(URLS["China"], "China")
-    dados_eua = buscar_indices(URLS["EUA"], "EUA")
+
+    dados_brasil = await buscar_indices_playwright(URLS["Brasil"], "Brasil")
+    dados_china = await buscar_indices_playwright(URLS["China"], "China")
+    dados_eua = await buscar_indices_playwright(URLS["EUA"], "EUA")
 
     df_brasil = pd.DataFrame(dados_brasil)
     df_china = pd.DataFrame(dados_china)
@@ -188,7 +172,6 @@ def main() -> None:
     inserir_dados(df_china, "China")
     inserir_dados(df_eua, "EUA")
 
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
     print(obter_top_10_indices())
