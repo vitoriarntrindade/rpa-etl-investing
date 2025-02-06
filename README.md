@@ -12,15 +12,11 @@ O script acessa o site Investing.com.
 
 Coleta os dados financeiros relevantes, incluindo:
 
-Nome do Índice
-
-Valor Atual
-
-Valor Máximo
-
-Valor Mínimo
-
-Variação Percentual
+- Nome do Índice
+- Valor Atual
+- Valor Máximo
+- Valor Mínimo
+- Variação Percentual
 
 Identifica o país de origem e classifica automaticamente o setor econômico (Primário, Secundário ou Terciário).
 
@@ -28,11 +24,11 @@ Identifica o país de origem e classifica automaticamente o setor econômico (Pr
 
 Os dados brutos extraídos são processados e normalizados:
 
-Conversão de formatos numéricos (pontos e vírgulas ajustados para float).
+- Conversão de formatos numéricos (pontos e vírgulas ajustados para float).
 
-Padronização dos nomes dos índices.
+- Padronização dos nomes dos índices.
 
-Classificação automática do setor econômico conforme o país.
+- Classificação automática do setor econômico conforme o país.
 
 ### 🏦 3️⃣ Carregamento (Load)
 
